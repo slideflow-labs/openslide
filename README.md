@@ -4,6 +4,34 @@ OpenSlide is a C library for reading whole slide image files (also known as
 virtual slides).  It provides a consistent and simple API for reading files
 from multiple vendors.
 
+## Slideflow Labs fork
+
+This LGPL-2.1-only fork was modified by Slideflow Labs on 2026-08-02 to
+carry a narrow Leica Versa compatibility change:
+
+- A valid, finite, positive objective below 2× identifies a low-power macro
+  image when the device model is exactly `Versa`.
+- A supplemental Leica label IFD is exposed as the `label` associated image.
+
+The change preserves OpenSlide's existing canvas, offsets, main-pyramid
+validation, and region bounds. It does not truncate inconsistent pyramids or
+replace Leica collection dimensions with main-image dimensions.
+
+Builds identify themselves with the version suffix `slideflow.1.0.0`. Use the
+normal Meson commands below; override the suffix only when producing a newly
+versioned Slideflow release:
+
+```
+meson setup builddir --buildtype=release
+meson compile -C builddir
+meson test -C builddir --print-errorlogs
+meson install -C builddir
+```
+
+The complete source code for this fork, including its build and installation
+scripts, is provided under the same LGPL-2.1-only license as OpenSlide. See
+`COPYING.LESSER`.
+
 
 ## Features
 

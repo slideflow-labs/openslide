@@ -1,6 +1,8 @@
+# Modified by Slideflow Labs on 2026-08-02 to identify fork builds by default.
 option(
   'version_suffix',
   type : 'string',
+  value : 'slideflow.1.0.0',
   description : 'Suffix to append to the package version string',
 )
 option(

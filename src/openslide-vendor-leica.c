@@ -25,6 +25,11 @@
  *
  * quickhash comes from _openslide_tifflike_init_properties_and_hash
  *
+ * Modified by Slideflow Labs on 2026-08-02:
+ * - Recognize low-power Leica Versa macro images whose physical extent differs
+ *   from the main image.
+ * - Expose supplemental Leica label images.
+ *
  */
 
 #include "openslide-private.h"
@@ -49,6 +54,9 @@ static const char LEICA_ATTR_OFFSET_Y[] = "offsetY";
 static const char LEICA_ATTR_IFD[] = "ifd";
 static const char LEICA_ATTR_Z_PLANE[] = "z";
 static const char LEICA_VALUE_BRIGHTFIELD[] = "brightfield";
+static const char LEICA_VALUE_LABEL[] = "label";
+static const char LEICA_VALUE_VERSA[] = "Versa";
+static const double LEICA_VERSA_MACRO_OBJECTIVE_CUTOFF = 2.0;
 
 #define PARSE_INT_ATTRIBUTE_OR_RETURN(NODE, NAME, OUT, RET)	\
   do {								\
@@ -90,6 +98,7 @@ struct collection {
 
   int64_t nm_across;
   int64_t nm_down;
+  int64_t supplemental_label_dir;
 
   GPtrArray *images;
 };
@@ -319,6 +328,22 @@ static int dimension_compare(const void *a, const void *b) {
   }
 }
 
+static bool is_versa_macro_image(const struct image *image) {
+  if (!image->device_model ||
+      strcmp(image->device_model, LEICA_VALUE_VERSA) ||
+      !image->objective) {
+    return false;
+  }
+
+  // Versa macro views do not necessarily cover the full collection, so they
+  // cannot be identified by geometry.  Require a valid, finite, positive
+  // objective value before applying the low-power classification.
+  double objective = _openslide_parse_double(image->objective);
+  return isfinite(objective) &&
+         objective > 0 &&
+         objective < LEICA_VERSA_MACRO_OBJECTIVE_CUTOFF;
+}
+
 static void set_region_bounds_props(openslide_t *osr,
                                     struct level *level0) {
   int64_t x0 = INT64_MAX;
@@ -396,6 +421,7 @@ static struct collection *parse_xml_description(const char *xml,
 
   // create collection struct
   g_autoptr(collection) collection = g_new0(struct collection, 1);
+  collection->supplemental_label_dir = -1;
   collection->images =
     g_ptr_array_new_with_free_func(OPENSLIDE_G_DESTROY_NOTIFY_WRAPPER(image_free));
 
@@ -465,7 +491,8 @@ static struct collection *parse_xml_description(const char *xml,
     image->is_macro = (image->nm_offset_x == 0 &&
                        image->nm_offset_y == 0 &&
                        image->nm_across == collection->nm_across &&
-                       image->nm_down == collection->nm_down);
+                       image->nm_down == collection->nm_down) ||
+                      is_versa_macro_image(image);
 
     // get dimensions
     ctx->node = image_node;
@@ -504,6 +531,34 @@ static struct collection *parse_xml_description(const char *xml,
 
     // sort dimensions
     g_ptr_array_sort(image->dimensions, dimension_compare);
+  }
+
+  // Leica collection metadata can store the label separately from the macro.
+  ctx->node = collection_node;
+  g_autoptr(xmlXPathObject) supplemental_images_result =
+    _openslide_xml_xpath_eval(ctx, "d:supplementalImage");
+  if (supplemental_images_result) {
+    for (int i = 0;
+         i < supplemental_images_result->nodesetval->nodeNr;
+         i++) {
+      xmlNode *supplemental_image_node =
+        supplemental_images_result->nodesetval->nodeTab[i];
+      g_autoptr(xmlChar) type =
+        xmlGetProp(supplemental_image_node, BAD_CAST "type");
+
+      if (!type || strcmp((char *) type, LEICA_VALUE_LABEL)) {
+        continue;
+      }
+      if (collection->supplemental_label_dir != -1) {
+        g_set_error(err, OPENSLIDE_ERROR, OPENSLIDE_ERROR_FAILED,
+                    "Found multiple supplemental label images");
+        return NULL;
+      }
+      PARSE_INT_ATTRIBUTE_OR_RETURN(supplemental_image_node,
+                                    LEICA_ATTR_IFD,
+                                    collection->supplemental_label_dir,
+                                    NULL);
+    }
   }
 
   return g_steal_pointer(&collection);
@@ -783,6 +838,13 @@ static bool leica_open(openslide_t *osr, const char *filename,
   int64_t quickhash_dir;
   if (!create_levels_from_collection(osr, tc, ct.tiff, collection,
                                      level_array, &quickhash_dir, err)) {
+    return false;
+  }
+
+  // Expose a label stored outside the macro image.
+  if (collection->supplemental_label_dir != -1 &&
+      !_openslide_tiff_add_associated_image(
+        osr, "label", tc, collection->supplemental_label_dir, NULL, err)) {
     return false;
   }
 
